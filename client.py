@@ -19,6 +19,7 @@ import Queue
 from threading import Thread
 import hashlib
 from multiprocessing import cpu_count
+from itertools import islice, count
 
 import mysocket
 
@@ -29,6 +30,9 @@ SERVER_IP = socket.getfqdn()
 SERVER_PORT = 9900
 LISTEN = 1
 CORE_NUM = cpu_count()
+
+
+XRANGE = lambda start, stop, step=1: islice(count(start, step), (stop-start+step-1+2*(step<0))//step)
 
 
 class Client(object):
@@ -63,16 +67,18 @@ class Client(object):
         """Populates the range queue with (start, end) ranges."""
         ranges = response.split(mysocket.DATA_SEPARATOR)
         for r in ranges:
+            if not r:
+                print 'No jobs available!'
+                exit()
             start, end = r.split(mysocket.RANGE_SEPARATOR)
-            self.ranges.put((long(start), long(end)))
+            self.ranges.put((start, end))
 
     def check_range(self):
         start, end = self.ranges.get()
-        for i in xrange(start, end):
+        for i in XRANGE(long(start), long(end)):
             attempt = str(i).zfill(NUM_DIGITS)
             if self.found:
                 return
-            print 'trying: ' + attempt
             m = hashlib.md5()
             m.update(attempt)
             result = m.digest()
@@ -82,8 +88,8 @@ class Client(object):
                 return
 
     def check_queued_ranges(self):
+        raw_input('enter')
         threads = [Thread(target=self.check_range) for i in xrange(self.ranges.qsize())]
-        raw_input('press enter to check.')
         for thread in threads:
             thread.start()
         for thread in threads:

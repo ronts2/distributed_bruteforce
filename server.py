@@ -60,7 +60,6 @@ class JobManager(object):
             start and end of a job.
         """
         if self.aborted_jobs.qsize():
-            print 'trying aborted.'
             return self.aborted_jobs.get()
         try:
             return next(self._job_generator)
@@ -117,12 +116,11 @@ class Handler(BaseRequestHandler):
             if not msg:
                 return
         except socket.timeout:
-            print 'aborting...'
             for job in jobs:
                 self.server.job_manager.aborted_jobs.put(job)
             return
         msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
-        if msg_data == mysocket.SUCCESS_REPLY:
+        if msg_type == mysocket.SUCCESS_REPLY:
             print 'FOUND:', msg_data
 
 
