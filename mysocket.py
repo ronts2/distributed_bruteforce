@@ -22,6 +22,7 @@ import socket
 
 REQUEST = 'request'
 SUCCESS_REPLY = 'success'
+FAILURE_REPLY = 'failure'
 DATA_SEPARATOR = ':'
 RANGE_SEPARATOR = '-'
 
@@ -81,6 +82,9 @@ class MySocket(socket.socket):
         while True:
             try:
                 buf = super(MySocket, self).recv(self.bufsize)
+            # MySocket is originally blocking (timeout=0), so if there's a timeout it was set externally.
+            except socket.timeout as e:
+                raise e
             except socket.error as e:
                 print e
                 return ''
@@ -115,3 +119,8 @@ class MySocket(socket.socket):
         """
         sock, (ip, port) = super(MySocket, self).accept()
         return MySocket(ip, port, _socket=sock)
+
+    def close_conn(self):
+        """Shuts down and closes the socket."""
+        super(MySocket, self).shutdown(socket.SHUT_RDWR)
+        super(MySocket, self).close()

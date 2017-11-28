@@ -24,6 +24,7 @@ import mysocket
 
 
 HASHED = codecs.decode('EC9C0F7EDCC18A98B1F31853B1813301', 'hex')
+NUM_DIGITS = 10
 SERVER_IP = socket.getfqdn()
 SERVER_PORT = 9900
 LISTEN = 1
@@ -47,26 +48,20 @@ class Client(object):
         self.ip = ip
         self.port = port
         self.ranges = Queue.Queue()
-
-    def send(self, string):
+        self.found = False
         self.client = mysocket.MySocket(self.ip, self.port)
-        self.connect()
-        self.client.send_msg(string)
 
     def connect(self):
-        """Connects to the server."""
         self.client.connect()
-        print 'Connected to: {}:{}'.format(self.client.ip, self.client.port)
 
     def request_ranges(self):
         """Request ranges from the server."""
-        self.send(mysocket.DATA_SEPARATOR.join([mysocket.REQUEST, str(CORE_NUM)]))
-        self.response = self.client.receive()
-        self.close_conn()
+        msg = mysocket.DATA_SEPARATOR.join([mysocket.REQUEST, str(CORE_NUM)])
+        self.client.send_msg(msg)
 
-    def populate_queue(self):
+    def populate_queue(self, response):
         """Populates the range queue with (start, end) ranges."""
-        ranges = self.response.split(mysocket.DATA_SEPARATOR)
+        ranges = response.split(mysocket.DATA_SEPARATOR)
         for r in ranges:
             start, end = r.split(mysocket.RANGE_SEPARATOR)
             self.ranges.put((long(start), long(end)))
@@ -74,37 +69,38 @@ class Client(object):
     def check_range(self):
         start, end = self.ranges.get()
         for i in xrange(start, end):
-            print 'trying: ' + str(i)
+            attempt = str(i).zfill(NUM_DIGITS)
+            if self.found:
+                return
+            print 'trying: ' + attempt
             m = hashlib.md5()
-            m.update(str(i))
+            m.update(attempt)
             result = m.digest()
             if result == HASHED:
-                self.send(mysocket.DATA_SEPARATOR.join([mysocket.SUCCESS_REPLY, str(i)]))
-                self.close_conn()
-                exit()
+                self.client.send_msg(mysocket.DATA_SEPARATOR.join([mysocket.SUCCESS_REPLY, attempt]))
+                self.found = True
+                return
 
     def check_queued_ranges(self):
         threads = [Thread(target=self.check_range) for i in xrange(self.ranges.qsize())]
+        raw_input('press enter to check.')
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
+        if not self.found:
+            self.client.send_msg(mysocket.DATA_SEPARATOR.join([mysocket.FAILURE_REPLY, '']))
 
     def get_job(self):
+        self.connect()
         self.request_ranges()
-        self.populate_queue()
+        self.populate_queue(self.client.receive())
         self.check_queued_ranges()
-        self.close_conn()
-
-    def close_conn(self):
-        self.client.shutdown(socket.SHUT_RDWR)
-        self.client.close()
 
 
 def main():
-    while True:
-        client = Client(ip=SERVER_IP, port=SERVER_PORT)
-        client.get_job()
+    client = Client(SERVER_IP, SERVER_PORT)
+    client.get_job()
 
 
 if __name__ == '__main__':

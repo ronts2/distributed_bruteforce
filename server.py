@@ -5,8 +5,10 @@ Attributes
 ----------
 MAX_NUM: long
     the highest value to try.
-CHECK_RANGE_SIZE: int
+JOB_RANGE_SIZE: int
     the size of the range to try on each core.
+JOB_TIMEOUT: int
+    the maximum amount of time for a client to respond before aborting the job.
 SERVER_IP: str
     the default ip the server is bound to.
 SERVER_PORT: int
@@ -16,102 +18,117 @@ LISTEN: int
 
 """
 
-import socket
-import select
+from SocketServer import TCPServer, ThreadingMixIn, BaseRequestHandler
+import socket  # used for socket.getfqdn()
 import Queue
 import mysocket
 
 
 MAX_NUM = 10000000000
-CHECK_RANGE_SIZE = 1000000
+JOB_RANGE_SIZE = 10000
+JOB_TIMEOUT = 5
 SERVER_IP = socket.getfqdn()
 SERVER_PORT = 9900
 LISTEN = 1
 
 
-class Server(object):
-    """This class holds the logic and functionality to distribute
-    and manage brute-force attacks.
-    It is used to manage clients and the distributed data.
-    """
-    def __init__(self, ip=SERVER_IP, port=SERVER_PORT):
+class JobManager(object):
+    """This class offers thread-safe job management."""
+    def __init__(self, max_num=MAX_NUM, range_size=JOB_RANGE_SIZE):
         """The class constructor.
+
         Parameters
         ----------
-        ip: str
-            the ip of the server (e.g. '0.0.0.0').
-        port: int
-            the port of the server (e.g. 9900).
+        max_num:  Union[int, long]
+            the maximum number to check.
+        range_size: Union[int, long]
+            the size of each checking range.
         """
-        self.server = mysocket.MySocket(ip, port)
-        self.server.bind((ip, port))
-        self.ranges = Queue.Queue()
+        self.max_num = max_num
+        self.range_size = range_size
+        self.aborted_jobs = Queue.Queue()
+        self._job_generator = self._get()
 
-    def activate_socket(self):
-        """Activates the server socket listener."""
-        self.server.listen(1)
+    def get(self):
+        """Generates jobs.
 
-    def populate_range_queue(self):
-        """Populates the range queue with checking ranges."""
-        start = CHECK_RANGE_SIZE
-        end = CHECK_RANGE_SIZE
+        Returns
+        ------
+        Tuple[None, None]
+            if no more jobs are available.
+        Tuple[long, long]
+            start and end of a job.
+        """
+        if self.aborted_jobs.qsize():
+            print 'trying aborted.'
+            return self.aborted_jobs.get()
+        try:
+            return next(self._job_generator)
+        except StopIteration:
+            return None, None
+
+    def _get(self):
+        """Generates jobs.
+
+        Yields
+        ------
+        Tuple[long, long]
+            start and end of a job.
+        """
+        start = 0
+        end = self.range_size
         left = MAX_NUM - start
         while left > 0:
-            self.ranges.put((start, end))
+            yield str(start), str(end)
             left -= end
             start = end
-            end += CHECK_RANGE_SIZE
+            end += self.range_size
 
-    def start_serving(self):
-        """Starts serving clients."""
-        self.activate_socket()
-        self.populate_range_queue()
-        while True:
-            self.conn = self.server.accept()
-            self.handle_conn()
 
-    def close_conn(self):
-        self.conn.shutdown(socket.SHUT_RDWR)
-        self.conn.close()
+class Server(ThreadingMixIn, TCPServer, object):
+    """This class contains the server """
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        super(Server, self).__init__(server_address, RequestHandlerClass, bind_and_activate)
+        self.job_manager = JobManager()
 
-    def handle_conn(self):
-        self.msg = self.conn.receive()
-        print '{}:{} - {}'.format(self.conn.ip, self.conn.port, self.msg)
-        if not self.msg:
+
+class Handler(BaseRequestHandler):
+    def handle(self):
+        self.request = mysocket.MySocket(*self.client_address, _socket=self.request)
+        msg = self.request.receive()
+        print '{}:{} - {}'.format(self.request.ip, self.request.port, msg)
+        if not msg:
             return
-        self.parse_msg()
-
-    def parse_msg(self):
-        self.msg_type, self.data = self.msg.split(mysocket.DATA_SEPARATOR)
-        if self.msg_type == mysocket.REQUEST:
-            self.do_request()
-        else:
-            self.do_reply()
-
-    def do_request(self):
-        qsize = self.ranges.qsize()
-        if not qsize:
+        msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
+        job_request = int(msg_data)
+        jobs = []
+        job = self.server.job_manager.get()
+        if not any(job):
             return
-        num_cores = int(self.data)
-        num_ranges = num_cores if num_cores < qsize else qsize
-        ranges = [mysocket.RANGE_SEPARATOR.join([str(i).zfill(10) for i in self.ranges.get()])
-                  for r in xrange(num_ranges)]
-        msg = mysocket.DATA_SEPARATOR.join(ranges)
-        self.conn.send_msg(msg)
-        self.close_conn()
-
-    def do_reply(self):
-        if self.msg_type == mysocket.SUCCESS_REPLY:
-            print 'Found: {}'.format(self.data)
-            self.close_conn()
-            self.server.close()
-            exit()
+        jobs.append(job)
+        for i in xrange(job_request - 1):
+            job = self.server.job_manager.get()
+            jobs.append(job) if any(job) else None
+        msg = mysocket.DATA_SEPARATOR.join([mysocket.RANGE_SEPARATOR.join(job) for job in jobs])
+        self.request.send_msg(msg)
+        self.request.settimeout(JOB_TIMEOUT)
+        try:
+            msg = self.request.receive()
+            if not msg:
+                return
+        except socket.timeout:
+            print 'aborting...'
+            for job in jobs:
+                self.server.job_manager.aborted_jobs.put(job)
+            return
+        msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
+        if msg_data == mysocket.SUCCESS_REPLY:
+            print 'FOUND:', msg_data
 
 
 def main():
-    server = Server()
-    print 'Serving on {}:{} ...'.format(server.server.ip, server.server.port)
-    server.start_serving()
+    server = Server((SERVER_IP, SERVER_PORT), Handler)
+    server.serve_forever()
 
 
 if __name__ == '__main__':
