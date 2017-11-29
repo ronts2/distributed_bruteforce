@@ -7,6 +7,8 @@ Attributes
 ----------
 SUCCESS_REPLY: str
     the starter (identifier) of a successful brute force attempt.
+FAILURE_REPLY: str
+    the starter (identifier) of a failed brute force attempt.
 DATA_SEPARATOR: str
     a string used to separate message components.
 EOD: str

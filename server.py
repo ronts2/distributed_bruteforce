@@ -15,6 +15,8 @@ SERVER_PORT: int
     the default port the server is bound to.
 LISTEN: int
     the maximum number of queued connections.
+MAX_JOB_QUEUE_SIZE: int
+    the maximum amount of jobs in the queue at once.
 
 """
 
@@ -45,12 +47,15 @@ class JobManager(object):
             the maximum number to check.
         range_size: Union[int, long]
             the size of each checking range.
+        max_job_queue_size: int
+            the maximum amount of jobs in the queue at once.
         """
         self.max_num = max_num
         self.range_size = range_size
         self.jobs = Queue.Queue(max_job_queue_size)
 
     def populate_job_queue(self):
+        """Runs the queue populator thread."""
         populator = Thread(target=self._job_queue_populator)
         populator.start()
 
@@ -61,7 +66,7 @@ class JobManager(object):
         -------
         Tuple[None, None]
             if no more jobs are available.
-        Tuple[long, long]
+        Tuple[str, str]
             start and end of a job.
         """
         if not self.jobs.qsize():
@@ -69,6 +74,9 @@ class JobManager(object):
         return self.jobs.get()
 
     def _job_queue_populator(self):
+        """Populates the job queue with generated jobs.
+        This is necessary to keep the job manager thread-safe.
+        """
         for job in self._job_generator():
             self.jobs.put(job)
 
@@ -116,6 +124,20 @@ class Handler(BaseRequestHandler):
     """This class is used to handle new incoming connections."""
 
     def get_jobs(self, count):
+        """Returns available jobs.
+
+        Parameters
+        ----------
+        count: int
+            number of requested jobs.
+
+        Returns
+        -------
+        Tuple[None, None]
+            if no more jobs are available.
+        List[Tuple[str, str]]
+            list of jobs.
+        """
         jobs = []
         job = self.server.job_manager.get()
         if not any(job):
@@ -126,18 +148,20 @@ class Handler(BaseRequestHandler):
             jobs.append(job) if any(job) else None
         return jobs
 
-    def get_reply_components(self):
+    def unparsed_recv(self):
+        """Returns split received string."""
         msg = self.request.receive()
         if not msg:
             return None, None
         return msg.split(mysocket.DATA_SEPARATOR)
+
     def handle(self):
         """Handles a new incoming connection."""
         self.request = mysocket.MySocket(*self.client_address, _socket=self.request)
-        msg_type, msg_data = self.get_reply_components()
+        msg_type, msg_data = self.unparsed_recv()
         if not msg_type:
             return
-        print '{}:{} - \'{}\''.format(self.request.ip, self.request.port, ':'.join([msg_type, msg_data[]))
+        print '{}:{} - \'{}\''.format(self.request.ip, self.request.port, ':'.join([msg_type, msg_data]))
         job_request = int(msg_data)
         jobs = self.get_jobs(job_request)
         if not any(jobs):
@@ -146,14 +170,11 @@ class Handler(BaseRequestHandler):
         self.request.send_msg(msg)
         self.request.settimeout(JOB_TIMEOUT)
         try:
-            msg = self.request.receive()
-            if not msg:
-                return
+            msg_type, msg_data = self.unparsed_recv()
         except socket.timeout:
             for job in jobs:
                 self.server.job_manager.jobs.put(job)
             return
-        msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
         if msg_type == mysocket.SUCCESS_REPLY:
             print 'FOUND:', msg_data
             self.server.shutdown()
