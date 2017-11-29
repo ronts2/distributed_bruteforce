@@ -13,8 +13,6 @@ SERVER_PORT: int
 
 """
 
-import codecs
-import socket
 import Queue
 from threading import Thread
 import hashlib
@@ -24,9 +22,9 @@ from itertools import islice, count
 import mysocket
 
 
-HASHED = codecs.decode('EC9C0F7EDCC18A98B1F31853B1813301', 'hex')
+HASHED = 'EC9C0F7EDCC18A98B1F31853B1813301'.lower()
 NUM_DIGITS = 10
-SERVER_IP = socket.getfqdn()
+SERVER_IP = '10.0.0.100'
 SERVER_PORT = 9900
 LISTEN = 1
 CORE_NUM = cpu_count()
@@ -73,22 +71,23 @@ class Client(object):
             start, end = r.split(mysocket.RANGE_SEPARATOR)
             self.ranges.put((start, end))
 
+    def check_hash(self, string):
+        m = hashlib.md5()
+        m.update(string)
+        return m.hexdigest() == HASHED
+
     def check_range(self):
         start, end = self.ranges.get()
         for i in XRANGE(long(start), long(end)):
-            attempt = str(i).zfill(NUM_DIGITS)
             if self.found:
                 return
-            m = hashlib.md5()
-            m.update(attempt)
-            result = m.digest()
-            if result == HASHED:
+            attempt = str(i).zfill(NUM_DIGITS)
+            if self.check_hash(attempt):
                 self.client.send_msg(mysocket.DATA_SEPARATOR.join([mysocket.SUCCESS_REPLY, attempt]))
                 self.found = True
                 return
 
     def check_queued_ranges(self):
-        raw_input('enter')
         threads = [Thread(target=self.check_range) for i in xrange(self.ranges.qsize())]
         for thread in threads:
             thread.start()
@@ -97,16 +96,18 @@ class Client(object):
         if not self.found:
             self.client.send_msg(mysocket.DATA_SEPARATOR.join([mysocket.FAILURE_REPLY, '']))
 
-    def get_job(self):
+    def run_job(self):
         self.connect()
         self.request_ranges()
         self.populate_queue(self.client.receive())
         self.check_queued_ranges()
+        self.client.close_conn()
 
 
 def main():
-    client = Client(SERVER_IP, SERVER_PORT)
-    client.get_job()
+    while True:
+        client = Client(SERVER_IP, SERVER_PORT)
+        client.start_job()
 
 
 if __name__ == '__main__':

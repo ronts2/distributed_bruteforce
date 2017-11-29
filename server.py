@@ -18,8 +18,9 @@ LISTEN: int
 
 """
 
+from threading import Thread
 from SocketServer import TCPServer, ThreadingMixIn, BaseRequestHandler
-import socket  # used for socket.getfqdn()
+import socket
 import Queue
 import mysocket
 
@@ -27,14 +28,15 @@ import mysocket
 MAX_NUM = 10000000000
 JOB_RANGE_SIZE = 10000
 JOB_TIMEOUT = 5
-SERVER_IP = socket.getfqdn()
+SERVER_IP = '0.0.0.0'
 SERVER_PORT = 9900
 LISTEN = 1
+MAX_JOB_QUEUE_SIZE = 50
 
 
 class JobManager(object):
     """This class offers thread-safe job management."""
-    def __init__(self, max_num=MAX_NUM, range_size=JOB_RANGE_SIZE):
+    def __init__(self, max_num=MAX_NUM, range_size=JOB_RANGE_SIZE, max_job_queue_size=MAX_JOB_QUEUE_SIZE):
         """The class constructor.
 
         Parameters
@@ -46,68 +48,96 @@ class JobManager(object):
         """
         self.max_num = max_num
         self.range_size = range_size
-        self.aborted_jobs = Queue.Queue()
-        self._job_generator = self._get()
+        self.jobs = Queue.Queue(max_job_queue_size)
+
+    def populate_job_queue(self):
+        populator = Thread(target=self._job_queue_populator)
+        populator.start()
 
     def get(self):
         """Generates jobs.
 
         Returns
-        ------
+        -------
         Tuple[None, None]
             if no more jobs are available.
         Tuple[long, long]
             start and end of a job.
         """
-        if self.aborted_jobs.qsize():
-            return self.aborted_jobs.get()
-        try:
-            return next(self._job_generator)
-        except StopIteration:
+        if not self.jobs.qsize():
             return None, None
+        return self.jobs.get()
 
-    def _get(self):
+    def _job_queue_populator(self):
+        for job in self._job_generator():
+            self.jobs.put(job)
+
+    def _job_generator(self, start=0):
         """Generates jobs.
+
+        Parameters
+        ----------
+        start: Union[int, long]
+            the initial range value.
 
         Yields
         ------
-        Tuple[long, long]
+        Tuple[str, str]
             start and end of a job.
         """
-        start = 0
-        end = self.range_size
-        left = MAX_NUM - start
-        while left > 0:
+        start = start
+        end = start + self.range_size
+        while start < self.max_num:
             yield str(start), str(end)
-            left -= end
             start = end
             end += self.range_size
 
 
 class Server(ThreadingMixIn, TCPServer, object):
-    """This class contains the server """
+    """This class is used for managing work between clients."""
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        """The class constructor.
+
+        Parameters
+        ----------
+        server_address: Tuple[str, int]
+            the address the server will be bound to.
+        RequestHandlerClass: RequestHandler
+            a class which is instantiated for each connection and is used to handle it.
+        bind_and_activate: bool
+            binds and activates the listener if True.
+        """
         super(Server, self).__init__(server_address, RequestHandlerClass, bind_and_activate)
         self.job_manager = JobManager()
+        self.job_manager.populate_job_queue()
 
 
 class Handler(BaseRequestHandler):
+    """This class is used to handle new incoming connections."""
+
+    def get_jobs(self, count):
+        jobs = []
+        job = self.server.job_manager.get()
+        if not any(job):
+            return job
+        jobs.append(job)
+        for i in xrange(count - 1):
+            job = self.server.job_manager.get()
+            jobs.append(job) if any(job) else None
+        return jobs
+
     def handle(self):
+        """Handles a new incoming connection."""
         self.request = mysocket.MySocket(*self.client_address, _socket=self.request)
         msg = self.request.receive()
-        print '{}:{} - {}'.format(self.request.ip, self.request.port, msg)
+        print '{}:{} - \'{}\''.format(self.request.ip, self.request.port, msg)
         if not msg:
             return
         msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
         job_request = int(msg_data)
-        jobs = []
-        job = self.server.job_manager.get()
-        if not any(job):
+        jobs = self.get_jobs(job_request)
+        if not any(jobs):
             return
-        jobs.append(job)
-        for i in xrange(job_request - 1):
-            job = self.server.job_manager.get()
-            jobs.append(job) if any(job) else None
         msg = mysocket.DATA_SEPARATOR.join([mysocket.RANGE_SEPARATOR.join(job) for job in jobs])
         self.request.send_msg(msg)
         self.request.settimeout(JOB_TIMEOUT)
@@ -117,15 +147,17 @@ class Handler(BaseRequestHandler):
                 return
         except socket.timeout:
             for job in jobs:
-                self.server.job_manager.aborted_jobs.put(job)
+                self.server.job_manager.jobs.put(job)
             return
         msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
         if msg_type == mysocket.SUCCESS_REPLY:
             print 'FOUND:', msg_data
+            self.server.shutdown()
 
 
 def main():
     server = Server((SERVER_IP, SERVER_PORT), Handler)
+    print 'Serving on {}:{} ...'.format(SERVER_IP, SERVER_PORT)
     server.serve_forever()
 
 
