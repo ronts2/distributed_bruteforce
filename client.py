@@ -107,7 +107,7 @@ class Client(object):
 def main():
     while True:
         client = Client(SERVER_IP, SERVER_PORT)
-        client.start_job()
+        client.run_job()
 
 
 if __name__ == '__main__':

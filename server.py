@@ -126,14 +126,18 @@ class Handler(BaseRequestHandler):
             jobs.append(job) if any(job) else None
         return jobs
 
+    def get_reply_components(self):
+        msg = self.request.receive()
+        if not msg:
+            return None, None
+        return msg.split(mysocket.DATA_SEPARATOR)
     def handle(self):
         """Handles a new incoming connection."""
         self.request = mysocket.MySocket(*self.client_address, _socket=self.request)
-        msg = self.request.receive()
-        print '{}:{} - \'{}\''.format(self.request.ip, self.request.port, msg)
-        if not msg:
+        msg_type, msg_data = self.get_reply_components()
+        if not msg_type:
             return
-        msg_type, msg_data = msg.split(mysocket.DATA_SEPARATOR)
+        print '{}:{} - \'{}\''.format(self.request.ip, self.request.port, ':'.join([msg_type, msg_data[]))
         job_request = int(msg_data)
         jobs = self.get_jobs(job_request)
         if not any(jobs):
